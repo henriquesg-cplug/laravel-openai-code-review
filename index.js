@@ -54,11 +54,11 @@ async function run() {
 
       // Chamar a OpenAI para análise de código
       const response = await openai.chat.completions.create({
-        model: "gpt-4-turbo",
+        model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
-            content: "Você é um revisor de código especialista em Laravel 10 e PHP 8.3. Seu trabalho é analisar código, identificar problemas e sugerir melhorias. Forneça análises diretas e específicas para cada trecho de código, com foco em boas práticas, segurança e performance. Na sugestão, inclua APENAS o código corrigido, sem explicações ou comentários dentro do código. A explicação deve ser fornecida separadamente."
+            content: "Você é um revisor de código especialista em Laravel 10 e PHP 8.3. Seu trabalho é analisar código, identificar problemas e sugerir melhorias. Forneça análises diretas e específicas para cada trecho de código, com foco em boas práticas, segurança e performance. Na sugestão, inclua APENAS o código corrigido, sem explicações ou comentários dentro do código. A explicação deve ser fornecida separadamente. Para código PHP, siga rigorosamente PSR-1 e PSR-12. Não sugira alterações se o código já estiver correto ou se a alteração for apenas estilística menor."
           },
           {
             role: "user",
@@ -166,63 +166,165 @@ IMPORTANTE: O campo "suggestion" deve conter APENAS o código válido da linha c
 function parseSuggestions(content) {
   try {
     // Tentar extrair JSON da resposta
-    const jsonMatch = content.match(/```json([\s\S]*?)```/) ||
-      content.match(/{[\s\S]*?}/);
+    let jsonContent = content;
 
-    const jsonContent = jsonMatch
-      ? jsonMatch[1] || jsonMatch[0]
-      : content;
+    // Verificar se o conteúdo é um texto que contém JSON
+    if (typeof content === 'string') {
+      // Verificar padrões de json
+      const jsonMatch = content.match(/```json([\s\S]*?)```/) ||
+        content.match(/```([\s\S]*?)```/) ||
+        content.match(/{[\s\S]*"suggestions"[\s\S]*?}/);
 
-    const parsed = JSON.parse(jsonContent);
-    return parsed.suggestions || [];
+      if (jsonMatch) {
+        jsonContent = jsonMatch[1] ? jsonMatch[1].trim() : jsonMatch[0].trim();
+      }
+
+      // Limpar caracteres que poderiam interferir na análise do JSON
+      jsonContent = jsonContent.replace(/^```json/, '').replace(/```$/, '');
+
+      // Tentar encontrar apenas o objeto JSON dentro do texto
+      if (!jsonContent.startsWith('{')) {
+        const jsonStart = jsonContent.indexOf('{');
+        const jsonEnd = jsonContent.lastIndexOf('}') + 1;
+        if (jsonStart !== -1 && jsonEnd > jsonStart) {
+          jsonContent = jsonContent.substring(jsonStart, jsonEnd);
+        }
+      }
+    }
+
+    try {
+      // Tentar analisar o JSON
+      const parsed = JSON.parse(jsonContent);
+      return parsed.suggestions || [];
+    } catch (innerError) {
+      console.error('Erro ao analisar JSON:', innerError.message);
+      console.log('Tentando método alternativo de processamento...');
+
+      // Se falhar, tenta processar manualmente o texto para extrair sugestões
+      if (typeof content === 'string') {
+        return parseManualSuggestions(content);
+      }
+      return [];
+    }
   } catch (error) {
-    console.error('Erro ao analisar sugestões:', error);
+    console.error('Erro ao analisar sugestões:', error.message);
     console.log('Conteúdo recebido:', content);
 
-    // Tentar um método alternativo para extrair sugestões
-    const suggestions = [];
-    const lines = content.split('\n');
+    // Método alternativo para extrair sugestões
+    return parseManualSuggestions(content);
+  }
+}
 
-    let currentLine = null;
+/**
+ * Método alternativo para extrair sugestões quando a análise JSON falha
+ */
+function parseManualSuggestions(content) {
+  const suggestions = [];
+
+  // Verificar se o conteúdo tem um formato parecido com JSON
+  if (content.includes('"lineNumber"') && content.includes('"suggestion"')) {
+    // Tentar extrair objetos de sugestão individualmente
+    const lines = content.split('\n');
     let currentSuggestion = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      // Verificar se é o início de uma sugestão
+      const lineNumberMatch = line.match(/"lineNumber":\s*(\d+)/);
+      if (lineNumberMatch) {
+        // Finalizar sugestão anterior se existir
+        if (currentSuggestion && currentSuggestion.lineNumber && currentSuggestion.suggestion) {
+          suggestions.push(currentSuggestion);
+        }
+
+        // Iniciar nova sugestão
+        currentSuggestion = {
+          lineNumber: parseInt(lineNumberMatch[1], 10),
+          suggestion: '',
+          explanation: ''
+        };
+
+        // Verificar se a linha também contém a sugestão
+        const suggestionMatch = line.match(/"suggestion":\s*"(.+?)"/);
+        if (suggestionMatch) {
+          currentSuggestion.suggestion = suggestionMatch[1].replace(/\\"/g, '"');
+        } else {
+          // Procurar a sugestão na próxima linha
+          if (i + 1 < lines.length) {
+            const nextLine = lines[i + 1].trim();
+            const nextSuggestionMatch = nextLine.match(/"suggestion":\s*"(.+?)"/);
+            if (nextSuggestionMatch) {
+              currentSuggestion.suggestion = nextSuggestionMatch[1].replace(/\\"/g, '"');
+              i++; // Avançar uma linha
+            }
+          }
+        }
+
+        // Procurar a explicação
+        for (let j = i + 1; j < lines.length; j++) {
+          const explanationLine = lines[j].trim();
+          const explanationMatch = explanationLine.match(/"explanation":\s*"(.+?)"/);
+          if (explanationMatch) {
+            currentSuggestion.explanation = explanationMatch[1].replace(/\\"/g, '"');
+            i = j; // Avançar para esta linha
+            break;
+          }
+        }
+      }
+    }
+
+    // Adicionar a última sugestão se existir
+    if (currentSuggestion && currentSuggestion.lineNumber && currentSuggestion.suggestion) {
+      suggestions.push(currentSuggestion);
+    }
+  } else {
+    // Tentativa de extrair sugestões de texto livre
+    const lines = content.split('\n');
+    let currentLine = null;
+    let currentSuggestion = '';
     let currentExplanation = '';
 
     for (const line of lines) {
-      if (line.startsWith('Linha ') && line.includes(':')) {
+      if (line.includes('Linha ') || line.includes('Line ')) {
         // Salvar sugestão anterior se existir
-        if (currentLine && currentSuggestion) {
+        if (currentLine !== null && currentSuggestion) {
           suggestions.push({
             lineNumber: currentLine,
-            suggestion: currentSuggestion,
-            explanation: currentExplanation.trim()
+            suggestion: currentSuggestion.trim(),
+            explanation: currentExplanation.trim() || 'Melhoria sugerida.'
           });
         }
 
         // Iniciar nova sugestão
-        const match = line.match(/Linha (\d+):/);
+        const match = line.match(/(?:Linha|Line) (\d+)/);
         currentLine = match ? parseInt(match[1], 10) : null;
-        currentSuggestion = null;
+        currentSuggestion = '';
         currentExplanation = '';
       } else if (line.includes('Sugestão:') || line.includes('Suggestion:')) {
         currentSuggestion = line.split(':').slice(1).join(':').trim();
-      } else if (currentLine && !currentExplanation && line.trim()) {
-        currentExplanation = line;
-      } else if (currentExplanation && line.trim()) {
-        currentExplanation += ' ' + line.trim();
+      } else if (line.includes('Explicação:') || line.includes('Explanation:')) {
+        currentExplanation = line.split(':').slice(1).join(':').trim();
+      } else if (currentLine !== null && !currentSuggestion && line.trim()) {
+        // Se não encontramos uma sugestão explícita, considere que a próxima linha não vazia é a sugestão
+        currentSuggestion = line.trim();
+      } else if (currentLine !== null && currentSuggestion && !currentExplanation && line.trim()) {
+        // Se já temos sugestão mas não explicação, próxima linha não vazia é explicação
+        currentExplanation = line.trim();
       }
     }
 
     // Adicionar a última sugestão
-    if (currentLine && currentSuggestion) {
+    if (currentLine !== null && currentSuggestion) {
       suggestions.push({
         lineNumber: currentLine,
-        suggestion: currentSuggestion,
-        explanation: currentExplanation.trim()
+        suggestion: currentSuggestion.trim(),
+        explanation: currentExplanation.trim() || 'Melhoria sugerida.'
       });
     }
-
-    return suggestions;
   }
+
+  return suggestions;
 }
 
 /**
