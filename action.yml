@@ -1,0 +1,20 @@
+name: 'Laravel Code Review com OpenAI'
+description: 'Realiza code review automático de código Laravel/PHP usando IA da OpenAI'
+author: 'Henrique Souza'
+
+inputs:
+  github-token:
+    description: 'Token de autenticação do GitHub'
+    required: true
+    default: ${{ github.token }}
+  openai-api-key:
+    description: 'API Key da OpenAI'
+    required: true
+
+runs:
+  using: 'node16'
+  main: 'dist/index.js'
+
+branding:
+  icon: 'code'
+  color: 'blue'
