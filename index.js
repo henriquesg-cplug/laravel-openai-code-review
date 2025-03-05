@@ -54,11 +54,11 @@ async function run() {
 
       // Chamar a OpenAI para análise de código
       const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: "gpt-4-turbo",
         messages: [
           {
             role: "system",
-            content: "Você é um revisor de código especialista em Laravel 10 e PHP 8.3. Seu trabalho é analisar código, identificar problemas e sugerir melhorias. Forneça análises diretas e específicas para cada trecho de código, com foco em boas práticas, segurança e performance."
+            content: "Você é um revisor de código especialista em Laravel 10 e PHP 8.3. Seu trabalho é analisar código, identificar problemas e sugerir melhorias. Forneça análises diretas e específicas para cada trecho de código, com foco em boas práticas, segurança e performance. Na sugestão, inclua APENAS o código corrigido, sem explicações ou comentários dentro do código. A explicação deve ser fornecida separadamente."
           },
           {
             role: "user",
@@ -72,7 +72,7 @@ async function run() {
       const suggestions = parseSuggestions(response.choices[0].message.content);
 
       // Adicionar as sugestões como comentários no PR
-      await addCommentsToPR(octokit, owner, repo, pullRequestNumber, file, suggestions);
+      await addCommentsToPR(octokit, owner, repo, pullRequestNumber, file, suggestions, commitId);
     }
 
     console.log('Revisão de código completa!');
@@ -139,6 +139,9 @@ function createPrompt(filename, changedLines) {
     prompt += `- Padrões do Laravel como Resource Controllers, Form Requests, etc.\n`;
     prompt += `- Potenciais problemas de segurança como SQL injection, XSS, etc.\n`;
     prompt += `- Otimizações de performance\n`;
+    prompt += `- Utilize Regras do PSR-1 e PSR-12 nas sugestões\n`;
+    prompt += `- Ignore alterações relacionadas apenas a fechamento de tags\n`;
+    prompt += `- Não comente nada caso o código sugerido é o mesmo de como está no PR\n`;
   }
 
   prompt += `\nFormate suas respostas como JSON com o seguinte formato:
@@ -146,11 +149,13 @@ function createPrompt(filename, changedLines) {
   "suggestions": [
     {
       "lineNumber": 123,
-      "suggestion": "Sugestão de código corrigida",
+      "suggestion": "public function exemplo(): string {",
       "explanation": "Breve explicação do motivo"
     }
   ]
-}`;
+}
+
+IMPORTANTE: O campo "suggestion" deve conter APENAS o código válido da linha corrigida, sem comentários ou explicações. A aplicação vai falhar se incluir qualquer coisa além do código em si.`;
 
   return prompt;
 }
@@ -223,24 +228,31 @@ function parseSuggestions(content) {
 /**
  * Adiciona comentários ao PR
  */
-async function addCommentsToPR(octokit, owner, repo, pullNumber, file, suggestions) {
+async function addCommentsToPR(octokit, owner, repo, pullNumber, file, suggestions, commitId) {
   try {
-    // Obter o commit mais recente do PR
-    const { data: pullRequest } = await octokit.rest.pulls.get({
-      owner,
-      repo,
-      pull_number: pullNumber,
-    });
+    // Obter o commit mais recente do PR, se não tiver sido passado
+    if (!commitId) {
+      const { data: pullRequest } = await octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
 
-    const commitId = pullRequest.head.sha;
+      commitId = pullRequest.head.sha;
+    }
 
     // Para cada sugestão, criar um comentário de revisão
     for (const suggestion of suggestions) {
       console.log(`Adicionando comentário para a linha ${suggestion.lineNumber} no arquivo ${file.filename}`);
 
-      const body = `**Sugestão do Code Reviewer:**\n\n\`\`\`suggestion
+      // Formatar a sugestão para conter apenas o código, sem explicação dentro do bloco sugestão
+      const body = `**Sugestão do Code Reviewer:**
+
+\`\`\`suggestion
 ${suggestion.suggestion}
-\`\`\`\n\n${suggestion.explanation}`;
+\`\`\`
+
+${suggestion.explanation}`;
 
       await octokit.rest.pulls.createReviewComment({
         owner,
