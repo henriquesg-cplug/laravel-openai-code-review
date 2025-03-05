@@ -164,132 +164,229 @@ IMPORTANTE: O campo "suggestion" deve conter APENAS o código válido da linha c
 }
 
 /**
- * Parseia as sugestões da resposta da OpenAI
+ * Parseia as sugestões da resposta da OpenAI com tratamento robusto de erros
+ * @param {string|object} content - Conteúdo que pode conter sugestões
+ * @returns {Array} Array de objetos de sugestão
  */
 function parseSuggestions(content) {
   try {
-    // Tentar extrair JSON da resposta
-    let jsonContent = content;
-
-    // Verificar se o conteúdo é um texto que contém JSON
-    if (typeof content === 'string') {
-      // Verificar padrões de json
-      const jsonMatch = content.match(/```json([\s\S]*?)```/) ||
-        content.match(/```([\s\S]*?)```/) ||
-        content.match(/{[\s\S]*"suggestions"[\s\S]*?}/);
-
-      if (jsonMatch) {
-        jsonContent = jsonMatch[1] ? jsonMatch[1].trim() : jsonMatch[0].trim();
-      }
-
-      // Limpar caracteres que poderiam interferir na análise do JSON
-      jsonContent = jsonContent.replace(/^```json/, '').replace(/```$/, '');
-
-      // Tentar encontrar apenas o objeto JSON dentro do texto
-      if (!jsonContent.startsWith('{')) {
-        const jsonStart = jsonContent.indexOf('{');
-        const jsonEnd = jsonContent.lastIndexOf('}') + 1;
-        if (jsonStart !== -1 && jsonEnd > jsonStart) {
-          jsonContent = jsonContent.substring(jsonStart, jsonEnd);
-        }
-      }
+    // Se já for um objeto, verificar se tem sugestões diretamente
+    if (typeof content === 'object' && content !== null) {
+      return content.suggestions || [];
     }
 
-    try {
-      // Tentar analisar o JSON
-      const parsed = JSON.parse(jsonContent);
-      return parsed.suggestions || [];
-    } catch (innerError) {
-      console.error('Erro ao analisar JSON:', innerError.message);
-      console.log('Tentando método alternativo de processamento...');
-
-      // Se falhar, tenta processar manualmente o texto para extrair sugestões
-      if (typeof content === 'string') {
-        return parseManualSuggestions(content);
-      }
+    // Garantir que content é uma string
+    if (typeof content !== 'string') {
+      console.log('Conteúdo não é uma string ou objeto:', typeof content);
       return [];
     }
-  } catch (error) {
-    console.error('Erro ao analisar sugestões:', error.message);
-    console.log('Conteúdo recebido:', content);
 
-    // Método alternativo para extrair sugestões
+    // Tentar extrair JSON da resposta
+    let jsonContent = content;
+    let extractedJson = null;
+
+    // 1. Tentar extrair de blocos de código
+    const jsonMatches = [
+      content.match(/```json([\s\S]*?)```/),
+      content.match(/```([\s\S]*?)```/),
+      content.match(/{[\s\S]*"suggestions"[\s\S]*?}/)
+    ].filter(Boolean);
+
+    for (const match of jsonMatches) {
+      try {
+        const extracted = match[1] ? match[1].trim() : match[0].trim();
+        // Limpar caracteres que poderiam interferir na análise
+        const cleaned = extracted
+          .replace(/^```json/, '')
+          .replace(/```$/, '')
+          .trim();
+
+        // Garantir que é um objeto JSON válido
+        if (cleaned.startsWith('{') && cleaned.endsWith('}')) {
+          const parsed = JSON.parse(cleaned);
+          if (parsed && parsed.suggestions) {
+            return parsed.suggestions;
+          }
+        }
+      } catch (e) {
+        // Continuar para a próxima tentativa
+        console.log(`Falha na extração de bloco de código: ${e.message}`);
+      }
+    }
+
+    // 2. Tentar encontrar objeto JSON dentro do texto
+    try {
+      let jsonStr = jsonContent;
+
+      // Se não começa com {, tenta encontrar o objeto JSON
+      if (!jsonStr.startsWith('{')) {
+        const jsonStart = jsonStr.indexOf('{');
+        const jsonEnd = jsonStr.lastIndexOf('}') + 1;
+
+        if (jsonStart !== -1 && jsonEnd > jsonStart) {
+          jsonStr = jsonStr.substring(jsonStart, jsonEnd);
+        }
+      }
+
+      // Verificar se parece um JSON válido antes de tentar analisar
+      if (jsonStr.startsWith('{') && jsonStr.endsWith('}')) {
+        try {
+          // Remover caracteres problemáticos
+          const cleanedJson = jsonStr
+            .replace(/\r?\n/g, ' ')               // Substituir quebras de linha por espaços
+            .replace(/[\u0000-\u001F]+/g, ' ')    // Remover caracteres de controle
+            .replace(/\s+/g, ' ')                 // Normalizar espaços
+            .trim();
+
+          const parsed = JSON.parse(cleanedJson);
+          if (parsed && parsed.suggestions) {
+            return parsed.suggestions;
+          }
+        } catch (jsonError) {
+          console.log('Erro ao analisar JSON limpo:', jsonError.message);
+
+          // Tentar método mais agressivo de limpeza
+          try {
+            // Normalizar aspas e chaves
+            let normalizedJson = jsonStr
+              .replace(/"/g, '"')                 // Normalizar aspas
+              .replace(/"/g, '"')                 // Normalizar aspas curvas
+              .replace(/'/g, "'")                 // Normalizar apóstrofos
+              .replace(/\r?\n\s*(\d+)\s*/, '\n')  // Remover números de linha
+              .replace(/,\s*]/g, ']')             // Remover vírgulas antes de fechamento de arrays
+              .replace(/,\s*}/g, '}');            // Remover vírgulas antes de fechamento de objetos
+
+            const parsed = JSON.parse(normalizedJson);
+            if (parsed && parsed.suggestions) {
+              return parsed.suggestions;
+            }
+          } catch (deepCleanError) {
+            console.log('Erro ao analisar JSON normalizado:', deepCleanError.message);
+          }
+        }
+      }
+    } catch (outerError) {
+      console.log('Falha geral na extração de JSON:', outerError.message);
+    }
+
+    // 3. Se todas as tentativas de análise JSON falharem, tentar método manual
+    console.log('Todas as tentativas de análise JSON falharam. Usando método manual.');
+    return parseManualSuggestions(content);
+  } catch (error) {
+    console.error('Erro crítico ao analisar sugestões:', error.message);
+    console.log('Conteúdo problemático:', content.substring(0, 200) + '...');
     return parseManualSuggestions(content);
   }
 }
 
 /**
  * Método alternativo para extrair sugestões quando a análise JSON falha
+ * @param {string} content - Conteúdo textual contendo sugestões
+ * @returns {Array} Array de objetos de sugestão
  */
 function parseManualSuggestions(content) {
+  if (typeof content !== 'string') {
+    return [];
+  }
+
   const suggestions = [];
 
-  // Verificar se o conteúdo tem um formato parecido com JSON
-  if (content.includes('"lineNumber"') && content.includes('"suggestion"')) {
-    // Tentar extrair objetos de sugestão individualmente
-    const lines = content.split('\n');
-    let currentSuggestion = null;
+  try {
+    // Método 1: Extração baseada em estrutura JSON
+    if (content.includes('"lineNumber"') && content.includes('"suggestion"')) {
+      // Limpar possíveis problemas de formatação
+      const cleanedContent = content
+        .replace(/\r?\n\s*(\d+)\s*/, '\n')  // Remover números de linha
+        .replace(/,\s*]/g, ']')            // Remover vírgulas antes de fechamento de arrays
+        .replace(/,\s*}/g, '}');           // Remover vírgulas antes de fechamento de objetos
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+      // Extrair objetos de sugestão usando regex
+      const suggestionPattern = /{[^{]*?"lineNumber"\s*:\s*(\d+)[^{]*?"suggestion"\s*:\s*"([^"]*)"[^{]*?"explanation"\s*:\s*"([^"]*)"/g;
+      let match;
 
-      // Verificar se é o início de uma sugestão
-      const lineNumberMatch = line.match(/"lineNumber":\s*(\d+)/);
-      if (lineNumberMatch) {
-        // Finalizar sugestão anterior se existir
-        if (currentSuggestion && currentSuggestion.lineNumber && currentSuggestion.suggestion) {
-          suggestions.push(currentSuggestion);
+      while ((match = suggestionPattern.exec(cleanedContent)) !== null) {
+        suggestions.push({
+          lineNumber: parseInt(match[1], 10),
+          suggestion: match[2].replace(/\\"/g, '"'),
+          explanation: match[3].replace(/\\"/g, '"')
+        });
+      }
+
+      if (suggestions.length > 0) {
+        return suggestions;
+      }
+
+      // Se o regex não encontrou sugestões, tentar linha por linha
+      const lines = cleanedContent.split('\n');
+      let currentSuggestion = null;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+
+        // Verificar se é o início de uma sugestão
+        const lineNumberMatch = line.match(/"lineNumber"\s*:\s*(\d+)/);
+        if (lineNumberMatch) {
+          // Finalizar sugestão anterior se existir
+          if (currentSuggestion && currentSuggestion.lineNumber && currentSuggestion.suggestion) {
+            suggestions.push(currentSuggestion);
+          }
+
+          // Iniciar nova sugestão
+          currentSuggestion = {
+            lineNumber: parseInt(lineNumberMatch[1], 10),
+            suggestion: '',
+            explanation: ''
+          };
+
+          // Verificar se a linha também contém a sugestão
+          const suggestionMatch = line.match(/"suggestion"\s*:\s*"([^"]*)"/);
+          if (suggestionMatch) {
+            currentSuggestion.suggestion = suggestionMatch[1].replace(/\\"/g, '"');
+          }
+
+          // Verificar se a linha tem explicação
+          const explanationMatch = line.match(/"explanation"\s*:\s*"([^"]*)"/);
+          if (explanationMatch) {
+            currentSuggestion.explanation = explanationMatch[1].replace(/\\"/g, '"');
+          }
         }
+        // Se não é o início de uma sugestão, verificar se contém sugestão ou explicação
+        else if (currentSuggestion) {
+          if (!currentSuggestion.suggestion) {
+            const suggestionMatch = line.match(/"suggestion"\s*:\s*"([^"]*)"/);
+            if (suggestionMatch) {
+              currentSuggestion.suggestion = suggestionMatch[1].replace(/\\"/g, '"');
+            }
+          }
 
-        // Iniciar nova sugestão
-        currentSuggestion = {
-          lineNumber: parseInt(lineNumberMatch[1], 10),
-          suggestion: '',
-          explanation: ''
-        };
-
-        // Verificar se a linha também contém a sugestão
-        const suggestionMatch = line.match(/"suggestion":\s*"(.+?)"/);
-        if (suggestionMatch) {
-          currentSuggestion.suggestion = suggestionMatch[1].replace(/\\"/g, '"');
-        } else {
-          // Procurar a sugestão na próxima linha
-          if (i + 1 < lines.length) {
-            const nextLine = lines[i + 1].trim();
-            const nextSuggestionMatch = nextLine.match(/"suggestion":\s*"(.+?)"/);
-            if (nextSuggestionMatch) {
-              currentSuggestion.suggestion = nextSuggestionMatch[1].replace(/\\"/g, '"');
-              i++; // Avançar uma linha
+          if (!currentSuggestion.explanation) {
+            const explanationMatch = line.match(/"explanation"\s*:\s*"([^"]*)"/);
+            if (explanationMatch) {
+              currentSuggestion.explanation = explanationMatch[1].replace(/\\"/g, '"');
             }
           }
         }
+      }
 
-        // Procurar a explicação
-        for (let j = i + 1; j < lines.length; j++) {
-          const explanationLine = lines[j].trim();
-          const explanationMatch = explanationLine.match(/"explanation":\s*"(.+?)"/);
-          if (explanationMatch) {
-            currentSuggestion.explanation = explanationMatch[1].replace(/\\"/g, '"');
-            i = j; // Avançar para esta linha
-            break;
-          }
-        }
+      // Adicionar a última sugestão se existir
+      if (currentSuggestion && currentSuggestion.lineNumber && currentSuggestion.suggestion) {
+        suggestions.push(currentSuggestion);
+      }
+
+      if (suggestions.length > 0) {
+        return suggestions;
       }
     }
 
-    // Adicionar a última sugestão se existir
-    if (currentSuggestion && currentSuggestion.lineNumber && currentSuggestion.suggestion) {
-      suggestions.push(currentSuggestion);
-    }
-  } else {
-    // Tentativa de extrair sugestões de texto livre
+    // Método 2: Extração de texto em linguagem natural
     const lines = content.split('\n');
     let currentLine = null;
     let currentSuggestion = '';
     let currentExplanation = '';
 
     for (const line of lines) {
-      if (line.includes('Linha ') || line.includes('Line ')) {
+      // Detectar número de linha - considerar mais formatos
+      if (line.match(/(?:Linha|Line|L\.|#)\s*(\d+)/i)) {
         // Salvar sugestão anterior se existir
         if (currentLine !== null && currentSuggestion) {
           suggestions.push({
@@ -300,14 +397,14 @@ function parseManualSuggestions(content) {
         }
 
         // Iniciar nova sugestão
-        const match = line.match(/(?:Linha|Line) (\d+)/);
+        const match = line.match(/(?:Linha|Line|L\.|#)\s*(\d+)/i);
         currentLine = match ? parseInt(match[1], 10) : null;
-        currentSuggestion = '';
+        currentSuggestion = line.replace(match[0], '').trim();
         currentExplanation = '';
-      } else if (line.includes('Sugestão:') || line.includes('Suggestion:')) {
-        currentSuggestion = line.split(':').slice(1).join(':').trim();
-      } else if (line.includes('Explicação:') || line.includes('Explanation:')) {
-        currentExplanation = line.split(':').slice(1).join(':').trim();
+      } else if (line.match(/(?:Sugestão|Suggestion|Sugestao)[:|-]/i)) {
+        currentSuggestion = line.split(/[:|-]/).slice(1).join(':').trim();
+      } else if (line.match(/(?:Explicação|Explanation|Explicacao|Razão|Reason)[:|-]/i)) {
+        currentExplanation = line.split(/[:|-]/).slice(1).join(':').trim();
       } else if (currentLine !== null && !currentSuggestion && line.trim()) {
         // Se não encontramos uma sugestão explícita, considere que a próxima linha não vazia é a sugestão
         currentSuggestion = line.trim();
@@ -325,6 +422,8 @@ function parseManualSuggestions(content) {
         explanation: currentExplanation.trim() || 'Melhoria sugerida.'
       });
     }
+  } catch (error) {
+    console.error('Erro no processamento manual de sugestões:', error.message);
   }
 
   return suggestions;
