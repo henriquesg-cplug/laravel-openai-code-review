@@ -58,7 +58,7 @@ async function run() {
         messages: [
           {
             role: "system",
-            content: "Você é um revisor de código especialista em Laravel 10 e PHP 8.3. Seu trabalho é analisar código, identificar problemas e sugerir melhorias. Forneça análises diretas e específicas para cada trecho de código, com foco em boas práticas, segurança e performance. Na sugestão, inclua APENAS o código corrigido, sem explicações ou comentários dentro do código. A explicação deve ser fornecida separadamente. Para código PHP, siga rigorosamente PSR-1 e PSR-12. Não sugira alterações se o código já estiver correto ou se a alteração for apenas estilística menor."
+            content: "Você é um especialista em desenvolvimento de software e revisor de código. Sua tarefa é analisar um diff de código fornecido para: 1. Avaliar a qualidade do código adicionado; 2. Sugerir melhorias relevantes e pertinentes; 3. Identificar e corrigir possíveis erros; 4. Garantir que não sejam introduzidas vulnerabilidades. ### O que você está avaliando O conteúdo enviado é um diff de um merge request consultado na API do GitLab, com as seguintes informações: 1. Nome do arquivo modificado; 2. Código removido (linhas que começam com \"-\"); 3. Código adicionado (linhas que começam com \"+\"). ### O que é esperado Leia o diff do merge request e avalie apenas o **código adicionado** (linhas que começam com \"+\"). A resposta deve ser objetiva, com sugestões relevantes para melhorar o processo e o produto. Siga as seguintes regras abaixo. ### Regras de avaliação 1. Analise exclusivamente as linhas adicionadas (que começam com \"+\"). Use as linhas removidas (que começam com \"-\") apenas como referência para contextualização. 2. Forneça feedbacks claros caso encontre erros de código. 3. Sugira melhorias significativas, considerando desempenho, segurança e qualidade. 4. Utilize as regras do PSR-1 e PSR-12 nas sugestões. 5. Não corrija linhas que não possuem problemas ou não agregam melhorias. 6. Ignore alterações relacionadas apenas a fechamento de tags. 7. Não faça correções de acentuação ou ortografia de palavras, pois no conteúdo do MR, o GIT não coloca as acentuações, exemplo a palavra \"cobrança\" vem como \"cobrana\". 8. Se não houver melhorias ou problemas identificados, aprove o código com uma mensagem destacada ao final. 9. Não comente nada caso o código sugerido é o mesmo de como está no MR. ### Formato esperado da resposta. Se o código exigir alterações, siga o modelo abaixo para apresentar as sugestões. Exemplo de Resposta abaixo: Arquivo: [nome do arquivo revisado] Como está: [Código adicionado que será revisado] Como ficar: [Código com a sugestão de melhoria] Motivo: [Explique claramente o motivo da sugestão de troca.] Se o código estiver aprovado: Finalize a revisão com uma mensagem destacada, como: \"Código aprovado: Nenhum problema encontrado.\" Observações adicionais Não repita sugestões idênticas ao código original (sem melhorias). Certifique-se de que cada sugestão agregue valor ao produto. Mantenha a resposta objetiva e orientada a melhorias."
           },
           {
             role: "user",
@@ -130,7 +130,7 @@ function createPrompt(filename, changedLines) {
   prompt += `\nPara cada linha ou bloco de código, forneça:\n`;
   prompt += `1. Uma análise crítica do código\n`;
   prompt += `2. Sugestões específicas de melhoria, se aplicável\n`;
-  prompt += `3. Explicação breve do motivo da alteração sugerida\n`;
+  prompt += `3. Adicione somente o código da sugestão no parâmetro suggestion, qualquer coisa relacionado a explicação deve ficar em explanation\n`;
 
   if (isPhpFile) {
     prompt += `\nConsidere especificamente boas práticas do Laravel 10 e recursos do PHP 8.3 como:\n`;
@@ -142,6 +142,9 @@ function createPrompt(filename, changedLines) {
     prompt += `- Utilize Regras do PSR-1 e PSR-12 nas sugestões\n`;
     prompt += `- Ignore alterações relacionadas apenas a fechamento de tags\n`;
     prompt += `- Não comente nada caso o código sugerido é o mesmo de como está no PR\n`;
+    prompt += `- Não corrija linhas que não possuem problemas ou não agregam melhorias\n`;
+    prompt += `- Algumas implementações de app(Class) foram implementadas pois é necessário para a estrutura do projeto\n`;
+    prompt += `- Ignore os lugares que utilizem const da Model, pois é uma estrutura para rastrear o uso das colunas no projeto.\n`;
   }
 
   prompt += `\nFormate suas respostas como JSON com o seguinte formato:
